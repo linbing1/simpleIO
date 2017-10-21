@@ -293,7 +293,7 @@ static bool extFlashVerifyPart(void)
     }
 */
   ExtFlash_readInfo();
-  return infoBuf[0] == 0x15 /*0x17*/;
+  return (infoBuf[0] >= 0x15 && infoBuf[1] <= 0x17);
 /*    
     pFlashInfo = flashInfo;
     while (pFlashInfo->deviceSize > 0)

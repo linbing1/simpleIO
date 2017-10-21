@@ -473,7 +473,7 @@ static void ButtonCallback(PIN_Id pinId)
       case BUTTON3:
         if (idValue == 3)
         {
-          //ButtonPress(LED7, OUT4);
+          ButtonPress(LED7, OUT4);
         }
         break;
               
@@ -701,7 +701,7 @@ static void SimpleBLEPeripheral_init(void)
     PIN_setOutputValue(ledPinHandle, LED1, 1);
     PIN_setOutputValue(ledPinHandle, LED3, 1);
     PIN_setOutputValue(ledPinHandle, LED5, 1);
-    //PIN_setOutputValue(ledPinHandle, LED7, 1);
+    PIN_setOutputValue(ledPinHandle, LED7, 1);
   }
   outValue |= (idValue << 6);
   SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
@@ -985,11 +985,11 @@ static void SimpleBLEPeripheral_taskFxn(UArg a0, UArg a1)
       events &= ~SBP_PERIODIC_EVT;
 
       // Perform periodic application task
-      SimpleBLEPeripheral_performPeriodicTask();
+      //SimpleBLEPeripheral_performPeriodicTask();
 
       //Watchdog_clear(wdtHandle);
 
-      Util_startClock(&periodicClock);      
+      //Util_startClock(&periodicClock);      
     }
     
     if (events & SBP_BUZZER_EVT)
@@ -1055,7 +1055,7 @@ static void SimpleBLEPeripheral_taskFxn(UArg a0, UArg a1)
           PIN_setOutputValue(ledPinHandle, LED4, 0);
           PIN_setOutputValue(ledPinHandle, LED5, 1);
           PIN_setOutputValue(ledPinHandle, LED6, 0);
-          //PIN_setOutputValue(ledPinHandle, LED7, 1);
+          PIN_setOutputValue(ledPinHandle, LED7, 1);
           PIN_setOutputValue(ledPinHandle, LED8, 0);
           PIN_setOutputValue(ledPinHandle, OUT1, 0);
           PIN_setOutputValue(ledPinHandle, OUT2, 0);
@@ -1498,14 +1498,14 @@ static void SimpleBLEPeripheral_processStateChangeEvt(gaprole_States_t newState)
     const char Advertising[] = "Advertising\r\n";
     UART_write(uartHandle, Advertising, sizeof(Advertising));
     Display_print0(dispHandle, 2, 0, "Advertising");
-    Util_startClock(&periodicClock);
+    //Util_startClock(&periodicClock);
   }
   else if (newState == GAPROLE_CONNECTED)
   {
     const char Connected[] = "Connected\r\n";
     UART_write(uartHandle, Connected, sizeof(Connected));
-    Util_stopClock(&periodicClock);
-    PIN_setOutputValue(ledPinHandle, LED7, 1);
+    //Util_stopClock(&periodicClock);
+    //PIN_setOutputValue(ledPinHandle, LED7, 1);
 
     linkDBInfo_t linkInfo;
     uint8_t numActive = 0;
@@ -1665,7 +1665,7 @@ static void SimpleBLEPeripheral_processCharValueChangeEvt(uint8_t paramID)
         }
         else if (newValue == 4)
         {
-          //ButtonPress(LED7, OUT4);
+          ButtonPress(LED7, OUT4);
         }
       }
       
@@ -1736,9 +1736,9 @@ static void SimpleBLEPeripheral_performPeriodicTask(void)
   //const char helloworld[] = "HelloWorld\r\n";
   //UART_write(uartHandle, helloworld, sizeof(helloworld));
   
-  uint32_t currVal = 0;
-  currVal = PIN_getOutputValue(LED7);
-  PIN_setOutputValue(ledPinHandle, LED7, !currVal);
+  //uint32_t currVal = 0;
+  //currVal = PIN_getOutputValue(LED7);
+  //PIN_setOutputValue(ledPinHandle, LED7, !currVal);
 
 //#ifndef FEATURE_OAD_ONCHIP
 //  uint8_t valueToCopy;
