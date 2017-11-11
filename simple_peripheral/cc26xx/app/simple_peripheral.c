@@ -102,6 +102,7 @@
 /*********************************************************************
  * CONSTANTS
  */
+//#define UART_ENABLE
 
 // Advertising interval when device is discoverable (units of 625us, 160=100ms)
 #define DEFAULT_ADVERTISING_INTERVAL          1600
@@ -143,7 +144,8 @@
 #define DEFAULT_CONN_PAUSE_PERIPHERAL         5
 
 // How often to perform periodic event (in msec)
-#define SBP_PERIODIC_EVT_PERIOD               1000
+#define SBP_PERIODIC_EVT_PERIOD               (1000 * 1800)
+#define SBP_DISCONNECT_EVT_PERIOD             30000
 #define SBP_BUZZER_EVT_PERIOD                 200
 #define SBP_LED_EVT_PERIOD                    200
 #define SBP_SHORTPRESS_EVT_PERIOD             50
@@ -164,8 +166,8 @@
 // Internal Events for RTOS application
 #define SBP_STATE_CHANGE_EVT                  0x0001
 #define SBP_CHAR_CHANGE_EVT                   0x0002
-#define SBP_PERIODIC_EVT                      0x0004
-#define SBP_CONN_EVT_END_EVT                  0x0008
+#define SBP_CONN_EVT_END_EVT                  0x0004
+#define SBP_ADV_CB_EVT                        0x0008
 
 #define SBP_BUZZER_EVT                        0x0010
 #define SBP_LED_EVT                           0x0020
@@ -174,6 +176,8 @@
 
 #define SBP_PASSCODE_EVT                      0x0100
 #define SBP_PAIRING_EVT                       0x0200
+#define SBP_PERIODIC_EVT                      0x0400
+#define SBP_DISCONNECT_EVT                    0x0800
 
 #define SBP_BUTTON1_EVT                       0x1000
 #define SBP_BUTTON2_EVT                       0x2000
@@ -233,13 +237,15 @@ PIN_Config buttonPinTable[] = {
   ID1      | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_DIS,
   BUTTON1  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES,
   BUTTON2  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES,
-  BUTTON3  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
-  BUTTON4  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_NEGEDGE,
+  BUTTON3  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES,
+  BUTTON4  | PIN_INPUT_EN | PIN_PULLUP | PIN_IRQ_BOTHEDGES,
   PIN_TERMINATE
 };
 
+#ifdef UART_ENABLE  
 UART_Handle uartHandle;
 UART_Params uartParams;
+#endif
 
 Watchdog_Handle wdtHandle;
 Watchdog_Params wdtParams;
@@ -250,12 +256,16 @@ void wdtCallback(UArg a0) {
 static uint8_t idValue = 0;
 static uint8_t ledCount = 0;
 static uint32_t outValue = 0;
+static uint16_t version = 2;
 
 static PIN_Id buttonCBPinId = BUTTON1;
 
 #define SNV_BUF_LEN 4
 #define SNV_ID_APP 0x80
 static uint8 snv_buf[SNV_BUF_LEN] = {0x00, 0x0D, 0x90, 0x38}; //888888
+#define SNV_ID_CONFIG 0x81
+#define SNV_ID_RESET 0x82
+static uint8_t resetValue = 0;
 
 // Entity ID globally used to check for source and/or destination of messages
 static ICall_EntityID selfEntity;
@@ -265,6 +275,7 @@ static ICall_Semaphore sem;
 
 // Clock instances for internal periodic events.
 static Clock_Struct periodicClock;
+static Clock_Struct disconnectClock;
 static Clock_Struct buzzerClock;
 static Clock_Struct ledClock;
 static Clock_Struct shortpressClock;
@@ -377,14 +388,6 @@ static void SimpleBLEPeripheral_processStateChangeEvt(gaprole_States_t newState)
 static void SimpleBLEPeripheral_processCharValueChangeEvt(uint8_t paramID);
 static void SimpleBLEPeripheral_performPeriodicTask(void);
 static void SimpleBLEPeripheral_clockHandler(UArg arg);
-static void SimpleBLEPeripheral_buzzerHandler(UArg arg);
-static void SimpleBLEPeripheral_ledHandler(UArg arg);
-static void SimpleBLEPeripheral_shortpressHandler(UArg arg);
-static void SimpleBLEPeripheral_longpressHandler(UArg arg);
-static void SimpleBLEPeripheral_button1Handler(UArg arg);
-static void SimpleBLEPeripheral_button2Handler(UArg arg);
-static void SimpleBLEPeripheral_button3Handler(UArg arg);
-static void SimpleBLEPeripheral_button4Handler(UArg arg);
 
 static void SimpleBLEPeripheral_sendAttRsp(void);
 static void SimpleBLEPeripheral_freeAttRsp(uint8_t status);
@@ -410,32 +413,149 @@ static void Sbp_pairStateCB(uint16_t connHandle, uint8_t state,
                             uint8_t status);
 static void Sbp_processPairStateEvt(uint8_t state, uint8_t status);
 
-static void ButtonPress(PIN_Id led, PIN_Id out)
+static void SetLEDByOut(PIN_Id out)
+{
+  uint32_t currVal = 0;
+  currVal = PIN_getOutputValue(out);
+  if (out == OUT1)
+  {
+    if (idValue == 0)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED3, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED3, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED4, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED4, 0);
+      }
+    }
+    else if (idValue == 1 || idValue == 2 || idValue == 3)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED1, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED1, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED2, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED2, 0);
+      }
+    }
+  } 
+  else if (out == OUT2)
+  {
+    if (idValue == 1)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED5, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED5, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED6, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED6, 0);
+      }
+    }
+    else if (idValue == 2 || idValue == 3)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED3, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED3, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED4, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED4, 0);
+      }
+    }
+  }
+  else if (out == OUT3)
+  {
+    if (idValue == 2 || idValue == 3)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED5, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED5, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED6, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED6, 0);
+      }
+    }    
+  }
+  else if (out == OUT4)
+  {
+    if (idValue == 3)
+    {
+      if ((outValue & 0x0100) == 0x0000)
+      {
+        PIN_setOutputValue(ledPinHandle, LED7, !currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED7, 0);
+      }
+      if ((outValue & 0x0200) == 0x0000)
+      {  
+        PIN_setOutputValue(ledPinHandle, LED8, currVal);
+      }
+      else
+      {
+        PIN_setOutputValue(ledPinHandle, LED8, 0);
+      }
+    }    
+  }
+}
+
+static void ButtonPress(PIN_Id out)
 {
   uint32_t currVal = 0;
   currVal = PIN_getOutputValue(out);
   PIN_setOutputValue(ledPinHandle, out, !currVal);
-  if ((outValue & 0x0100) == 0x0000)
-  {
-    PIN_setOutputValue(ledPinHandle, led, currVal);
-  }
-  if ((outValue & 0x0200) == 0x0000)
-  {
-    uint8_t led2 = LED1;
-    if (led == LED1)
-      led2 = LED2;
-    else if (led == LED3)
-      led2 = LED4;
-    else if (led == LED5)
-      led2 = LED6;
-    else if (led == LED7)
-      led2 = LED8;
-    PIN_setOutputValue(ledPinHandle, led2, !currVal);
-  }
+  SetLEDByOut(out);
   outValue ^= (1 << (out - OUT1));
   SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                              &outValue);
-  if ((outValue & 0x10) == 0x00)
+  
+  if ((outValue & 0x0400) == 0x0000)
   {
     PIN_setOutputValue(ledPinHandle, BUZZER, 1);
     Util_startClock(&buzzerClock);
@@ -449,12 +569,12 @@ static void ButtonCallback(PIN_Id pinId)
       case BUTTON1:
         if (idValue == 0)
         {
-          ButtonPress(LED3, OUT1);
+          ButtonPress(OUT1);
           Util_startClock(&longpressClock);
         }
         else if (idValue == 2 || idValue == 3)
         {
-          ButtonPress(LED3, OUT2);
+          ButtonPress(OUT2);
           Util_startClock(&longpressClock);
         }
         break;
@@ -462,28 +582,29 @@ static void ButtonCallback(PIN_Id pinId)
       case BUTTON2:
         if (idValue == 1)
         {
-          ButtonPress(LED5, OUT2);
+          ButtonPress(OUT2);
         }
         else if (idValue == 2 || idValue == 3)
         {
-          ButtonPress(LED5, OUT3);
+          ButtonPress(OUT3);
         }
         break;
 
       case BUTTON3:
         if (idValue == 3)
         {
-          ButtonPress(LED7, OUT4);
+          ButtonPress(OUT4);
         }
         break;
               
       case BUTTON4:
-        if (idValue == 1 || idValue == 2 || idValue == 3)
+        if (idValue == 2 || idValue == 3)
         {
-          ButtonPress(LED1, OUT1);
+          ButtonPress(OUT1);
         }
         if (idValue == 1)
         {
+          ButtonPress(OUT1);
           Util_startClock(&longpressClock);
         }
         break;
@@ -645,7 +766,20 @@ static void SimpleBLEPeripheral_init(void)
     IOCPortConfigureSet(IOID_8, IOC_PORT_RFC_TRC, IOC_STD_OUTPUT | IOC_CURRENT_4MA | IOC_SLEW_ENABLE);
   #endif // DEBUG_SW_TRACE
 #endif // USE_FPGA
-    
+
+#ifdef UART_ENABLE    
+  UART_Params_init(&uartParams);
+  uartParams.baudRate = 115200;
+  uartParams.writeDataMode = UART_DATA_BINARY;
+  uartParams.readDataMode = UART_DATA_BINARY;
+  uartParams.readReturnMode = UART_RETURN_FULL;
+  uartParams.readEcho = UART_ECHO_OFF;  
+  uartHandle = UART_open(Board_UART0, &uartParams);
+  if (uartHandle == NULL) {
+      //System_abort("Error opening the UART");
+  }
+#endif
+  
   /* Open LED pins */
   ledPinHandle = PIN_open(&ledPinState, ledPinTable);
   if(!ledPinHandle) {
@@ -677,49 +811,52 @@ static void SimpleBLEPeripheral_init(void)
   
   uint_t id0 = PIN_getInputValue(ID0);
   uint_t id1 = PIN_getInputValue(ID1);
+  
+#ifdef UART_ENABLE  
+  char uartString[] = "ID:00:00\r\n";
+  sprintf(uartString, "ID:%2d:%2d\r\n", id0, id1);
+  UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
+  
   if (id0 == 0 && id1 == 0)
   {
     idValue = 0;
-    PIN_setOutputValue(ledPinHandle, LED3, 1);
+    SetLEDByOut(OUT1);
   }
   else if (id0 != 0 && id1 == 0)
   {
     idValue = 1;
-    PIN_setOutputValue(ledPinHandle, LED1, 1);
-    PIN_setOutputValue(ledPinHandle, LED5, 1);
+    SetLEDByOut(OUT1);
+    SetLEDByOut(OUT2);
   }
   else if (id0 == 0 && id1 != 0)
   {
     idValue = 2;
-    PIN_setOutputValue(ledPinHandle, LED1, 1);
-    PIN_setOutputValue(ledPinHandle, LED3, 1);
-    PIN_setOutputValue(ledPinHandle, LED5, 1);
+    SetLEDByOut(OUT1);
+    SetLEDByOut(OUT2);
+    SetLEDByOut(OUT3);
   }
   else if (id0 != 0 && id1 != 0)
   {
     idValue = 3;
-    PIN_setOutputValue(ledPinHandle, LED1, 1);
-    PIN_setOutputValue(ledPinHandle, LED3, 1);
-    PIN_setOutputValue(ledPinHandle, LED5, 1);
-    PIN_setOutputValue(ledPinHandle, LED7, 1);
+    SetLEDByOut(OUT1);
+    SetLEDByOut(OUT2);
+    SetLEDByOut(OUT3);
+    SetLEDByOut(OUT4);
   }
   outValue |= (idValue << 6);
+  outValue |= (version << 16);
   SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                              &outValue);
-
-  UART_Params_init(&uartParams);
-  uartParams.baudRate  = 115200;
-  uartParams.writeDataMode = UART_DATA_BINARY;
-  uartParams.readDataMode = UART_DATA_BINARY;
-  uartParams.readReturnMode = UART_RETURN_FULL;
-  uartParams.readEcho = UART_ECHO_OFF;  
-  uartHandle = UART_open(Board_UART0, &uartParams);
-  if (uartHandle == NULL) {
-      //System_abort("Error opening the UART");
+  
+  uint8_t status = SUCCESS;
+  uint8_t config = 0;
+  status = osal_snv_read(SNV_ID_CONFIG, sizeof(uint8_t), (uint8 *)(&config));
+  if(status == SUCCESS)
+  {
+    outValue |= (config << 8);      
   }
-  const char helloworld[] = "HelloWorld\r\n";
-  UART_write(uartHandle, helloworld, sizeof(helloworld));
-
+  
 /*  
   Watchdog_init();
   Watchdog_Params_init(&wdtParams);
@@ -739,26 +876,28 @@ static void SimpleBLEPeripheral_init(void)
   // Create one-shot clocks for internal periodic events.
   Util_constructClock(&periodicClock, SimpleBLEPeripheral_clockHandler,
                       SBP_PERIODIC_EVT_PERIOD, 0, false, SBP_PERIODIC_EVT);
+  Util_constructClock(&disconnectClock, SimpleBLEPeripheral_clockHandler,
+                      SBP_DISCONNECT_EVT_PERIOD, 0, false, SBP_DISCONNECT_EVT);
   
-  Util_constructClock(&buzzerClock, SimpleBLEPeripheral_buzzerHandler,
+  Util_constructClock(&buzzerClock, SimpleBLEPeripheral_clockHandler,
                       SBP_BUZZER_EVT_PERIOD, 0, false, SBP_BUZZER_EVT);  
 
-  Util_constructClock(&ledClock, SimpleBLEPeripheral_ledHandler,
+  Util_constructClock(&ledClock, SimpleBLEPeripheral_clockHandler,
                       SBP_LED_EVT_PERIOD, 0, false, SBP_LED_EVT);  
 
-  Util_constructClock(&shortpressClock, SimpleBLEPeripheral_shortpressHandler,
+  Util_constructClock(&shortpressClock, SimpleBLEPeripheral_clockHandler,
                       SBP_SHORTPRESS_EVT_PERIOD, 0, false, SBP_SHORTPRESS_EVT);  
 
-  Util_constructClock(&longpressClock, SimpleBLEPeripheral_longpressHandler,
+  Util_constructClock(&longpressClock, SimpleBLEPeripheral_clockHandler,
                       SBP_LONGPRESS_EVT_PERIOD, 0, false, SBP_LONGPRESS_EVT);  
 
-  Util_constructClock(&button1Clock, SimpleBLEPeripheral_button1Handler,
+  Util_constructClock(&button1Clock, SimpleBLEPeripheral_clockHandler,
                       SBP_SHORTPRESS_EVT_PERIOD, 0, false, SBP_BUTTON1_EVT);  
-  Util_constructClock(&button2Clock, SimpleBLEPeripheral_button2Handler,
+  Util_constructClock(&button2Clock, SimpleBLEPeripheral_clockHandler,
                       SBP_SHORTPRESS_EVT_PERIOD, 0, false, SBP_BUTTON2_EVT);  
-  Util_constructClock(&button3Clock, SimpleBLEPeripheral_button3Handler,
+  Util_constructClock(&button3Clock, SimpleBLEPeripheral_clockHandler,
                       SBP_SHORTPRESS_EVT_PERIOD, 0, false, SBP_BUTTON3_EVT);  
-  Util_constructClock(&button4Clock, SimpleBLEPeripheral_button4Handler,
+  Util_constructClock(&button4Clock, SimpleBLEPeripheral_clockHandler,
                       SBP_SHORTPRESS_EVT_PERIOD, 0, false, SBP_BUTTON4_EVT);  
 
   dispHandle = Display_open(Display_Type_LCD, NULL);
@@ -821,7 +960,7 @@ static void SimpleBLEPeripheral_init(void)
   {
     uint32_t passkey = 0; // passkey "000000"
     uint8_t pairMode = GAPBOND_PAIRING_MODE_WAIT_FOR_REQ;
-    uint8_t mitm = FALSE;
+    uint8_t mitm = TRUE;
     uint8_t ioCap = GAPBOND_IO_CAP_DISPLAY_ONLY;
     uint8_t bonding = TRUE;
 
@@ -831,6 +970,18 @@ static void SimpleBLEPeripheral_init(void)
     GAPBondMgr_SetParameter(GAPBOND_MITM_PROTECTION, sizeof(uint8_t), &mitm);
     GAPBondMgr_SetParameter(GAPBOND_IO_CAPABILITIES, sizeof(uint8_t), &ioCap);
     GAPBondMgr_SetParameter(GAPBOND_BONDING_ENABLED, sizeof(uint8_t), &bonding);
+    
+    uint8 status = SUCCESS;
+    status = osal_snv_read(SNV_ID_RESET, sizeof(uint8_t), (uint8 *)(&resetValue));
+    if(status == SUCCESS)
+    {
+      if (resetValue == 1)
+      {
+        GAPBondMgr_SetParameter(GAPBOND_ERASE_ALLBONDS, 0, NULL);
+      }
+      resetValue = 0;
+      osal_snv_write(SNV_ID_RESET, sizeof(uint8_t), (uint8 *)(&resetValue));  
+    }
   }
 
    // Initialize GATT attributes
@@ -863,7 +1014,7 @@ static void SimpleBLEPeripheral_init(void)
 
     SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, sizeof(uint8_t),
                                &charValue1);
-    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint8_t),
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                                &charValue2);
 //    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, sizeof(uint8_t),
 //                               &charValue3);
@@ -890,6 +1041,8 @@ static void SimpleBLEPeripheral_init(void)
   GATT_RegisterForMsgs(selfEntity);
 
   HCI_LE_ReadMaxDataLenCmd();
+  
+  HCI_EXT_AdvEventNoticeCmd(selfEntity, SBP_ADV_CB_EVT);
 
 #if defined FEATURE_OAD
 #if defined (HAL_IMAGE_A)
@@ -951,6 +1104,14 @@ static void SimpleBLEPeripheral_taskFxn(UArg a0, UArg a1)
               // Try to retransmit pending ATT Response (if any)
               SimpleBLEPeripheral_sendAttRsp();
             }
+            else if (pEvt->event_flag & SBP_ADV_CB_EVT)
+            {
+              // Advertisment end
+#ifdef UART_ENABLE                
+              const char uartString[] = "Advertisment END\r\n";
+              UART_write(uartHandle, uartString, sizeof(uartString));              
+#endif              
+            }
           }
           else
           {
@@ -989,9 +1150,22 @@ static void SimpleBLEPeripheral_taskFxn(UArg a0, UArg a1)
 
       //Watchdog_clear(wdtHandle);
 
-      //Util_startClock(&periodicClock);      
+      uint8_t initialAdvertEnable = FALSE;
+      GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t),
+                         &initialAdvertEnable);
+      initialAdvertEnable = TRUE;
+      GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t),
+                         &initialAdvertEnable);
+      
+      Util_startClock(&periodicClock);      
     }
     
+    if (events & SBP_DISCONNECT_EVT)
+    {
+      events &= ~SBP_DISCONNECT_EVT;
+      GAPRole_TerminateConnection();
+    }
+
     if (events & SBP_BUZZER_EVT)
     {
       events &= ~SBP_BUZZER_EVT;
@@ -1007,76 +1181,30 @@ static void SimpleBLEPeripheral_taskFxn(UArg a0, UArg a1)
       {
         if (idValue == 0 || idValue == 2 || idValue == 3)
         {
-          uint32_t currVal =  PIN_getOutputValue(LED4);
+          uint32_t currVal =  PIN_getOutputValue(LED4); /*LED4*/
           PIN_setOutputValue(ledPinHandle, LED4, !currVal);
         }
         else if (idValue == 1)
         {
-          uint32_t currVal =  PIN_getOutputValue(LED2);
+          uint32_t currVal =  PIN_getOutputValue(LED2); /*LED2*/
           PIN_setOutputValue(ledPinHandle, LED2, !currVal);
         }
         ledCount ++;
         Util_startClock(&ledClock);
       }
       else
-      {
-        if (idValue == 0)
-        {
-          PIN_setOutputValue(ledPinHandle, LED3, 1);
-          PIN_setOutputValue(ledPinHandle, LED4, 0);
-          PIN_setOutputValue(ledPinHandle, OUT1, 0);
-        }
-        if (idValue == 1)
-        {
-          PIN_setOutputValue(ledPinHandle, LED1, 1);
-          PIN_setOutputValue(ledPinHandle, LED2, 0);
-          PIN_setOutputValue(ledPinHandle, LED5, 1);
-          PIN_setOutputValue(ledPinHandle, LED6, 0);
-          PIN_setOutputValue(ledPinHandle, OUT1, 0);
-          PIN_setOutputValue(ledPinHandle, OUT2, 0);
-        }
-        if (idValue == 2)
-        {
-          PIN_setOutputValue(ledPinHandle, LED1, 1);
-          PIN_setOutputValue(ledPinHandle, LED2, 0);
-          PIN_setOutputValue(ledPinHandle, LED3, 1);
-          PIN_setOutputValue(ledPinHandle, LED4, 0);
-          PIN_setOutputValue(ledPinHandle, LED5, 1);
-          PIN_setOutputValue(ledPinHandle, LED6, 0);
-          PIN_setOutputValue(ledPinHandle, OUT1, 0);
-          PIN_setOutputValue(ledPinHandle, OUT2, 0);
-          PIN_setOutputValue(ledPinHandle, OUT3, 0);
-        }
-        if (idValue == 3)
-        {
-          PIN_setOutputValue(ledPinHandle, LED1, 1);
-          PIN_setOutputValue(ledPinHandle, LED2, 0);
-          PIN_setOutputValue(ledPinHandle, LED3, 1);
-          PIN_setOutputValue(ledPinHandle, LED4, 0);
-          PIN_setOutputValue(ledPinHandle, LED5, 1);
-          PIN_setOutputValue(ledPinHandle, LED6, 0);
-          PIN_setOutputValue(ledPinHandle, LED7, 1);
-          PIN_setOutputValue(ledPinHandle, LED8, 0);
-          PIN_setOutputValue(ledPinHandle, OUT1, 0);
-          PIN_setOutputValue(ledPinHandle, OUT2, 0);
-          PIN_setOutputValue(ledPinHandle, OUT3, 0);
-          PIN_setOutputValue(ledPinHandle, OUT4, 0);
-        }
-        ledCount = 0;
-        
-        outValue = 0;
-        outValue |= (idValue << 6);
-        SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
-                                   &outValue);
-        
+      {        
         snv_buf[0] = 0x00;
         snv_buf[1] = 0x0D;
         snv_buf[2] = 0x90;
         snv_buf[3] = 0x38;
         osal_snv_write(SNV_ID_APP, SNV_BUF_LEN, (uint8 *)snv_buf);
-        
+
+        resetValue = 1;
+        osal_snv_write(SNV_ID_RESET, sizeof(uint8_t), (uint8 *)(&resetValue));  
+
         // Reset to the bootloader.
-        HAL_SYSTEM_RESET();        
+        HAL_SYSTEM_RESET(); 
       }
     }    
 
@@ -1384,11 +1512,23 @@ static void Sbp_pairStateCB(uint16_t connHandle, uint8_t state,
  */
 static void Sbp_processPairStateEvt(uint8_t state, uint8_t status)
 {
-  if (state == GAPBOND_PAIRING_STATE_COMPLETE)
+#ifdef UART_ENABLE  
+  char uartString[] = "Pair:00:00\r\n";
+  sprintf(uartString, "Pair:%2d:%2d\r\n", state, status);
+  UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
+  if (state == GAPBOND_PAIRING_STATE_COMPLETE || state == GAPBOND_PAIRING_STATE_BONDED)
   {
     if (status == SUCCESS)
     {
       // Store the address of the bonded address.
+      Util_stopClock(&disconnectClock);
+
+    }
+    else
+    {
+      // error
+      GAPRole_TerminateConnection();
     }
   }
 }
@@ -1437,6 +1577,10 @@ static void Sbp_processPasscodeEvt(uint16_t connHandle)
   passkey += (((uint32_t)snv_buf[2]) << 8);
   passkey += (((uint32_t)snv_buf[3]) << 0);
   
+#ifdef UART_ENABLE  
+  const char uartString[] = "passkey\r\n";
+  UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
   // Send passcode response.
   GAPBondMgr_PasscodeRsp(connHandle, SUCCESS, passkey);
 }
@@ -1493,27 +1637,39 @@ static void SimpleBLEPeripheral_processStateChangeEvt(gaprole_States_t newState)
     Display_print0(dispHandle, 1, 0, Util_convertBdAddr2Str(ownAddress));
     Display_print0(dispHandle, 2, 0, "Initialized");
   }
-  else if (newState == GAPROLE_ADVERTISING)
+  if (newState == GAPROLE_ADVERTISING)
   {
-    const char Advertising[] = "Advertising\r\n";
-    UART_write(uartHandle, Advertising, sizeof(Advertising));
+#ifdef UART_ENABLE  
+    const char uartString[] = "Advertising\r\n";
+    UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
     Display_print0(dispHandle, 2, 0, "Advertising");
     //Util_startClock(&periodicClock);
   }
-  else if (newState == GAPROLE_CONNECTED)
+  if (gapProfileState == GAPROLE_ADVERTISING &&
+            newState == GAPROLE_WAITING)
   {
-    const char Connected[] = "Connected\r\n";
-    UART_write(uartHandle, Connected, sizeof(Connected));
+#ifdef UART_ENABLE  
+    const char uartString[] = "Waiting\r\n";
+    UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
+  }
+  if (newState == GAPROLE_CONNECTED)
+  {
     //Util_stopClock(&periodicClock);
     //PIN_setOutputValue(ledPinHandle, LED7, 1);
+
+    Util_startClock(&disconnectClock);
 
     linkDBInfo_t linkInfo;
     uint8_t numActive = 0;
     numActive = linkDB_NumActive();
     
-    char conns[] = "Conns:0\r\n";
-    sprintf(conns, "Conns:%d\r\n", numActive);
-    UART_write(uartHandle, conns, sizeof(conns));
+#ifdef UART_ENABLE  
+    char uartString[] = "Conns:0\r\n";
+    sprintf(uartString, "Conns:%d\r\n", numActive);
+    UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
     // Use numActive to determine the connection handle of the last
     // connection
     if ( linkDB_GetInfo( numActive - 1, &linkInfo ) == SUCCESS )
@@ -1531,7 +1687,7 @@ static void SimpleBLEPeripheral_processStateChangeEvt(gaprole_States_t newState)
       Display_print0(dispHandle, 3, 0, Util_convertBdAddr2Str(peerAddress));
     }
   }
-  else if (gapProfileState == GAPROLE_CONNECTED &&
+  if (gapProfileState == GAPROLE_CONNECTED &&
            newState != GAPROLE_CONNECTED)
   {
     // disconnect
@@ -1542,34 +1698,30 @@ static void SimpleBLEPeripheral_processStateChangeEvt(gaprole_States_t newState)
 #if defined(FEATURE_OAD)      
     OADTarget_close();
 #endif      
-    const char Disconnected[] = "Disconnected\r\n";
-    UART_write(uartHandle, Disconnected, sizeof(Disconnected));
+#ifdef UART_ENABLE  
+    const char uartString[] = "Disconnected\r\n";
+    UART_write(uartHandle, uartString, sizeof(uartString));
+    if (newState == GAPROLE_WAITING_AFTER_TIMEOUT)
+    {
+      const char uartString[] = "Timeout\r\n";
+      UART_write(uartHandle, uartString, sizeof(uartString));
+    }
+#endif
     Display_print0(dispHandle, 2, 0, "Disconnected");
-
     // Clear remaining lines
     Display_clearLines(dispHandle, 3, 5);
-    {
+
     uint8_t initialAdvertEnable = TRUE;
     GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t),
                        &initialAdvertEnable);
-    }
     
-    if (newState == GAPROLE_WAITING_AFTER_TIMEOUT)
-    {
-    const char Timeout[] = "Timeout\r\n";
-    UART_write(uartHandle, Timeout, sizeof(Timeout));
-    }
   }
-  else if (gapProfileState == GAPROLE_ADVERTISING &&
-            newState == GAPROLE_WAITING)
+  if (newState == GAPROLE_ERROR)
   {
-    const char Waiting[] = "Waiting\r\n";
-    UART_write(uartHandle, Waiting, sizeof(Waiting));
-  }
-  else if (newState == GAPROLE_ERROR)
-  {
-    const char Error[] = "Error\r\n";
-    UART_write(uartHandle, Error, sizeof(Error));
+#ifdef UART_ENABLE  
+    const char uartString[] = "Error\r\n";
+    UART_write(uartHandle, uartString, sizeof(uartString));
+#endif
     Display_print0(dispHandle, 2, 0, "Error");
   }
   
@@ -1620,87 +1772,86 @@ static void SimpleBLEPeripheral_processCharValueChangeEvt(uint8_t paramID)
       {
         if (newValue == 1)
         {
-          ButtonPress(LED3, OUT1);
+          ButtonPress(OUT1);
         }
       }
       else if (idValue == 1)
       {
         if (newValue == 1)
         {
-          ButtonPress(LED1, OUT1);
+          ButtonPress(OUT1);
         }
         else if (newValue == 2)
         {
-          ButtonPress(LED5, OUT2);
+          ButtonPress(OUT2);
         }
       }
       else if (idValue == 2)
       {
         if (newValue == 1)
         {
-          ButtonPress(LED1, OUT1);
+          ButtonPress(OUT1);
         }
         else if (newValue == 2)
         {
-          ButtonPress(LED3, OUT2);
+          ButtonPress(OUT2);
         }
         else if (newValue == 3)
         {
-          ButtonPress(LED5, OUT3);
+          ButtonPress(OUT3);
         }
       }
       else if (idValue == 3)
       {
         if (newValue == 1)
         {
-          ButtonPress(LED1, OUT1);
+          ButtonPress(OUT1);
         }
         else if (newValue == 2)
         {
-          ButtonPress(LED3, OUT2);
+          ButtonPress(OUT2);
         }
         else if (newValue == 3)
         {
-          ButtonPress(LED5, OUT3);
+          ButtonPress(OUT3);
         }
         else if (newValue == 4)
         {
-          ButtonPress(LED7, OUT4);
+          ButtonPress(OUT4);
         }
       }
       
       if (newValue == 5)
       {
-          outValue ^= (1 << 4);
+          outValue ^= (0x01 << 10);
           SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                                      &outValue);
+          osal_snv_write(SNV_ID_CONFIG, sizeof(uint8_t), (uint8 *)(&outValue) + 1);  
           
-          if ((outValue & 0x0100) == 0x0000)
-          {
-            PIN_setOutputValue(ledPinHandle, LED1, 0);
-            PIN_setOutputValue(ledPinHandle, LED3, 0);
-            PIN_setOutputValue(ledPinHandle, LED5, 0);
-            PIN_setOutputValue(ledPinHandle, LED7, 0);
-          }
       }
       else if (newValue == 6)
       {
-          outValue ^= (1 << 8);
+          outValue ^= (0x01 << 8);
           SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                                      &outValue);
-          if ((outValue & 0x0200) == 0x0000)
-          {
-            PIN_setOutputValue(ledPinHandle, LED2, 0);
-            PIN_setOutputValue(ledPinHandle, LED4, 0);
-            PIN_setOutputValue(ledPinHandle, LED6, 0);
-            PIN_setOutputValue(ledPinHandle, LED8, 0);
-          }
+          osal_snv_write(SNV_ID_CONFIG, sizeof(uint8_t), (uint8 *)(&outValue) + 1);  
+          
+          SetLEDByOut(OUT1);
+          SetLEDByOut(OUT2);
+          SetLEDByOut(OUT3);
+          SetLEDByOut(OUT4);          
       }
       else if (newValue == 7)
       {
-          outValue ^= (1 << 9);
+          outValue ^= (0x01 << 9);
           SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, sizeof(uint32_t),
                                      &outValue);
+          osal_snv_write(SNV_ID_CONFIG, sizeof(uint8_t), (uint8 *)(&outValue) + 1);  
+
+          SetLEDByOut(OUT1);
+          SetLEDByOut(OUT2);
+          SetLEDByOut(OUT3);
+          SetLEDByOut(OUT4);          
       }
       
       break;
@@ -1733,9 +1884,10 @@ static void SimpleBLEPeripheral_processCharValueChangeEvt(uint8_t paramID)
  */
 static void SimpleBLEPeripheral_performPeriodicTask(void)
 {
-  //const char helloworld[] = "HelloWorld\r\n";
-  //UART_write(uartHandle, helloworld, sizeof(helloworld));
-  
+#ifdef UART_ENABLE  
+  //const char uartString[] = "HelloWorld\r\n";
+  //UART_write(uartHandle, uartString, sizeof(uartString));
+#endif  
   //uint32_t currVal = 0;
   //currVal = PIN_getOutputValue(LED7);
   //PIN_setOutputValue(ledPinHandle, LED7, !currVal);
@@ -1807,70 +1959,6 @@ void SimpleBLEPeripheral_processOadWriteCB(uint8_t event, uint16_t connHandle,
  * @return  None.
  */
 static void SimpleBLEPeripheral_clockHandler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_buzzerHandler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_ledHandler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_shortpressHandler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_longpressHandler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_button1Handler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_button2Handler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_button3Handler(UArg arg)
-{
-  // Store the event.
-  events |= arg;
-
-  // Wake up the application.
-  Semaphore_post(sem);
-}
-static void SimpleBLEPeripheral_button4Handler(UArg arg)
 {
   // Store the event.
   events |= arg;
